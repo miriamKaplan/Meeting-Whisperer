@@ -1,7 +1,7 @@
 """
-Summarizer Agent - Generates meeting summaries using GPT-4
+Summarizer Agent - Generates meeting summaries using Claude (Anthropic)
 """
-import openai
+import anthropic
 import os
 from typing import List
 from app.models import TranscriptLine, ActionItem
@@ -18,14 +18,15 @@ class SummarizerAgent:
     """
     
     def __init__(self):
-        self.api_key = os.getenv("OPENAI_API_KEY")
+        self.api_key = os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
-            raise ValueError("OPENAI_API_KEY not found in environment")
+            raise ValueError("ANTHROPIC_API_KEY not found in environment")
         
-        openai.api_key = self.api_key
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4-turbo-preview")
+        # Create Claude client
+        self.client = anthropic.Anthropic(api_key=self.api_key)
+        self.model = os.getenv("CLAUDE_MODEL", "claude-3-haiku-20240307")
         
-        print(f"✅ Summarizer Agent initialized with model: {self.model}")
+        print(f"✅ Summarizer Agent initialized with Claude model: {self.model}")
     
     async def generate_summary(
         self, 
@@ -73,23 +74,20 @@ Please provide:
 
 Format your response as JSON with keys: title, summary, key_points, decisions, participants"""
 
-            response = openai.ChatCompletion.create(
+            response = self.client.messages.create(
                 model=self.model,
+                max_tokens=1024,
+                temperature=0.3,
+                system="You are an expert meeting analyst. Provide concise, actionable summaries. Always respond with valid JSON.",
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert meeting analyst. Provide concise, actionable summaries."
-                    },
                     {
                         "role": "user",
                         "content": prompt
                     }
-                ],
-                temperature=0.3,
-                response_format={"type": "json_object"}
+                ]
             )
             
-            result = response.choices[0].message.content
+            result = response.content[0].text
             
             print(f"✅ Summary generated for meeting with {len(transcript)} lines")
             
@@ -136,23 +134,20 @@ Create a clear PR description with:
 
 Keep it concise and professional."""
 
-            response = openai.ChatCompletion.create(
+            response = self.client.messages.create(
                 model=self.model,
+                max_tokens=500,
+                temperature=0.5,
+                system="You are a software engineer creating PR descriptions.",
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a software engineer creating PR descriptions."
-                    },
                     {
                         "role": "user",
                         "content": prompt
                     }
-                ],
-                temperature=0.5,
-                max_tokens=500
+                ]
             )
             
-            return response.choices[0].message.content
+            return response.content[0].text
             
         except Exception as e:
             print(f"❌ PR description generation error: {str(e)}")
