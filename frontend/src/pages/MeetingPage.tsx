@@ -559,10 +559,97 @@ const SuccessMessage = styled.div`
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  
+
   &::before {
     content: '💡';
     font-size: 1.2rem;
+  }
+`;
+
+const RealtimeInsightsPanel = styled(Card)`
+  background: linear-gradient(135deg, #f0f9ff 0%, #e6f7ff 100%);
+  border: 2px solid #03A0EF;
+  box-shadow: 0 4px 16px rgba(3, 160, 239, 0.2);
+  animation: subtle-glow 2s ease-in-out infinite;
+
+  @keyframes subtle-glow {
+    0%, 100% { box-shadow: 0 4px 16px rgba(3, 160, 239, 0.2); }
+    50% { box-shadow: 0 4px 20px rgba(3, 160, 239, 0.35); }
+  }
+
+  h2 {
+    color: #03A0EF;
+    margin: 0 0 1.5rem 0;
+    padding: 0;
+    font-weight: 700;
+    line-height: 1.2;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+
+    &::before {
+      content: '🤖';
+      font-size: 1.5rem;
+    }
+  }
+`;
+
+const InsightItem = styled.div`
+  padding: 1rem;
+  margin-bottom: 0.75rem;
+  background: white;
+  border-left: 4px solid #03A0EF;
+  border-radius: 8px;
+  color: #1f0040;
+  font-weight: 500;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  box-shadow: 0 2px 8px rgba(3, 160, 239, 0.1);
+  animation: slide-in 0.3s ease-out;
+
+  @keyframes slide-in {
+    from {
+      opacity: 0;
+      transform: translateX(-20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(3, 160, 239, 0.2);
+    transition: all 0.2s ease;
+  }
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+`;
+
+const InsightsContainer = styled.div`
+  max-height: 400px;
+  overflow-y: auto;
+  padding-right: 0.5rem;
+
+  &::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: #f0f9ff;
+    border-radius: 4px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #03A0EF;
+    border-radius: 4px;
+
+    &:hover {
+      background: #0289D3;
+    }
   }
 `;
 
@@ -576,6 +663,7 @@ interface TranscriptItem {
     key_emotions: string[];
     mood_summary: string;
   };
+  realtimeInsights?: string[];  // NEW: Real-time insights from Claude
 }
 
 const MeetingPage: React.FC = () => {
@@ -590,6 +678,7 @@ const MeetingPage: React.FC = () => {
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const [realtimeInsights, setRealtimeInsights] = useState<string[]>([]);  // NEW: Store real-time insights
 
   // Refs for managing recording
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -599,6 +688,8 @@ const MeetingPage: React.FC = () => {
   const sessionIdRef = useRef<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioPlaybackRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);  // NEW: For real-time audio capture
+  const processorRef = useRef<ScriptProcessorNode | null>(null);  // NEW: For audio processing
 
   // Format duration as MM:SS
   const formatDuration = (seconds: number) => {
@@ -618,15 +709,16 @@ const MeetingPage: React.FC = () => {
     // Clear all data
     setTranscript([]);
     setActionItems([]);
+    setRealtimeInsights([]);  // NEW: Clear real-time insights
     setDuration(0);
     setError('');
-    
+
     // Show success message
     setSuccessMessage(`Session ${sessionNumber} cleared!`);
-    
+
     // Increment session number
     setSessionNumber(prev => prev + 1);
-    
+
     // Clear success message after 3 seconds
     setTimeout(() => {
       setSuccessMessage('');
@@ -893,18 +985,36 @@ Click OK to open the ticket in Jira.`;
           // Remove the interim result
           setTranscript(prev => prev.filter(item => !item.text.startsWith('[LIVE]')));
           
-          // Send final transcript to backend for emotion analysis with Claude
+          // Send final transcript to backend for emotion analysis with Claude + REAL-TIME INSIGHTS
           try {
             const response = await fetch('http://localhost:8000/api/analyze-emotion', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 text: finalTranscript,
-                speaker: 'You'
+                speaker: 'You',
+                recent_transcript: transcript.slice(-5).map(item => ({  // Send last 5 lines as context
+                  speaker: item.speaker,
+                  text: item.text,
+                  timestamp: new Date().toISOString()
+                }))
               })
             });
-            
+
             const emotionData = await response.json();
+
+            // NEW: Handle real-time insights from Claude
+            if (emotionData.realtime_insights && emotionData.realtime_insights.length > 0) {
+              console.log('🤖 Real-time insights received:', emotionData.realtime_insights);
+
+              // Add insights to the insights list
+              setRealtimeInsights(prev => [...prev, ...emotionData.realtime_insights]);
+
+              // Show success message with insight preview
+              const latestInsight = emotionData.realtime_insights[0];
+              setSuccessMessage(`🤖 ${latestInsight.substring(0, 50)}...`);
+              setTimeout(() => setSuccessMessage(''), 3000);
+            }
             
             // Add final transcript with emotions
             const newTranscriptItem = {
@@ -1015,103 +1125,186 @@ Click OK to open the ticket in Jira.`;
     const audioTypes = ['audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/mp4', 'audio/m4a', 'audio/webm', 'audio/ogg'];
     const videoTypes = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska', 'video/x-flv'];
     const allValidTypes = [...audioTypes, ...videoTypes];
-    
-    const isValidType = allValidTypes.includes(file.type) || 
+
+    const isValidType = allValidTypes.includes(file.type) ||
                        file.name.match(/\.(wav|mp3|m4a|webm|ogg|mp4|mov|avi|mkv|flv)$/i);
-    
+
     if (!isValidType) {
       setError('Please upload a valid audio or video file (WAV, MP3, M4A, WebM, OGG, MP4, MOV, AVI, MKV, or FLV)');
       return;
     }
 
-    // Check file size (max 200MB for videos)
-    const maxSize = file.type.startsWith('video/') ? 200 * 1024 * 1024 : 50 * 1024 * 1024;
+    // Check file size (max 1GB for all uploads)
+    const maxSize = 1024 * 1024 * 1024; // 1GB
     if (file.size > maxSize) {
-      setError(`File size must be less than ${maxSize / (1024 * 1024)}MB`);
+      setError('File size must be less than 1GB');
       return;
     }
 
     setError('');
     setSuccessMessage('');
-    
+
     // Create video preview URL if it's a video file
     const isVideo = file.type.startsWith('video/') || file.name.match(/\.(mp4|mov|avi|mkv|flv)$/i);
     console.log('📹 File uploaded:', file.name, 'isVideo:', isVideo);
-    
+
     if (isVideo) {
       const previewUrl = URL.createObjectURL(file);
       setVideoPreviewUrl(previewUrl);
-      
-      console.log('🎬 Video detected - will use batch processing');
-      
-      // Fall through to batch processing (works reliably)
-      // Note: This takes about 15 seconds but is reliable
-      setSuccessMessage('✅ Video loaded! Processing...');
-      // Don't return - let it fall through to batch processing below
-    } else {
-      setVideoPreviewUrl(null);
-    }
-    
-    try {
-      setIsProcessing(true);
-      setSuccessMessage('📤 Processing video/audio... this may take a minute');
-      
-      // Create FormData to send file
-      const formData = new FormData();
-      formData.append('file', file);
-      
-      // Send to backend for processing
-      const response = await fetch('http://127.0.0.1:8000/api/process-media', {
-        method: 'POST',
-        body: formData,
-        headers: {
-          'Accept': 'application/json',
-        },
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Upload error response:', errorText);
-        throw new Error(`Upload failed: ${response.status} - ${errorText}`);
+
+      console.log('🎬 Video detected - using TRUE REAL-TIME streaming with Deepgram');
+      setSuccessMessage('✅ Video loaded! Click play to start real-time transcription');
+
+      // Start real-time streaming when video starts playing
+      const video = videoRef.current;
+      if (video) {
+        video.onplay = () => {
+          startRealtimeVideoTranscription();
+        };
+
+        video.onpause = () => {
+          stopRealtimeVideoTranscription();
+        };
       }
-      
-      const data = await response.json();
-      
-      // Add transcribed content to current session
-      if (data.transcript && data.transcript.length > 0) {
-        const updatedTranscript = [...transcript, ...data.transcript];
-        setTranscript(updatedTranscript);
-        setSuccessMessage(`✅ Processed! Found ${data.transcript.length} lines of speech`);
-        
-        // Generate action items from the transcript immediately
-        generateActionItems(updatedTranscript);
-        
-        // Stop video playback when processing is complete
-        if (videoRef.current) {
-          videoRef.current.pause();
-        }
-      } else {
-        setError('No speech detected in the uploaded file');
-        
-        // Stop video on error too
-        if (videoRef.current) {
-          videoRef.current.pause();
-        }
-      }
-      
+
       // Reset file input
       event.target.value = '';
-    } catch (err) {
-      setError(`❌ Error processing file: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      console.error('File upload error:', err);
-      
-      // Stop video on error
-      if (videoRef.current) {
-        videoRef.current.pause();
-      }
-    } finally {
-      setIsProcessing(false);
+    } else {
+      setVideoPreviewUrl(null);
+      // For audio files, use the existing batch processing
+      // (you can keep the old SSE logic here if needed)
     }
+  };
+
+  // NEW: Start real-time video transcription with Deepgram
+  const startRealtimeVideoTranscription = async () => {
+    try {
+      setIsProcessing(true);
+      setSuccessMessage('🎙️ Real-time transcription starting...');
+
+      const video = videoRef.current;
+      if (!video) {
+        setError('Video element not found');
+        return;
+      }
+
+      // Generate session ID
+      const sessionId = `realtime-video-${Date.now()}`;
+      sessionIdRef.current = sessionId;
+
+      // Connect to WebSocket for real-time streaming
+      const ws = new WebSocket(`ws://localhost:8000/ws/realtime-video/${sessionId}`);
+      websocketRef.current = ws;
+
+      ws.onopen = async () => {
+        console.log('✅ Real-time WebSocket connected');
+        setSuccessMessage('🎙️ Real-time transcription active!');
+
+        // Create audio context
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        audioContextRef.current = audioContext;
+
+        // Create media source from video element
+        const source = audioContext.createMediaElementSource(video);
+
+        // Create processor for capturing audio
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        processorRef.current = processor;
+
+        // Connect nodes
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+        source.connect(audioContext.destination);  // Also play through speakers
+
+        // Process audio chunks
+        processor.onaudioprocess = (e) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            const inputData = e.inputBuffer.getChannelData(0);
+
+            // Convert Float32Array to Int16Array (PCM format for Deepgram)
+            const pcmData = new Int16Array(inputData.length);
+            for (let i = 0; i < inputData.length; i++) {
+              const s = Math.max(-1, Math.min(1, inputData[i]));
+              pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+
+            // Send to backend
+            ws.send(pcmData.buffer);
+          }
+        };
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'status') {
+          setSuccessMessage(data.message);
+        } else if (data.type === 'transcript') {
+          // Real-time transcript!
+          const transcriptData = data.data;
+
+          if (transcriptData.is_final) {
+            // Final transcript - add to list
+            const newLine = {
+              speaker: transcriptData.speaker,
+              text: transcriptData.text
+            };
+
+            setTranscript(prev => [...prev, newLine]);
+            console.log('✅ Real-time transcript:', transcriptData.text);
+          } else {
+            // Interim result - show as live preview
+            setSuccessMessage(`🎙️ "${transcriptData.text}..."`);
+          }
+        } else if (data.type === 'action_items') {
+          // Action items generated in real-time
+          const items = data.data.map((item: any) =>
+            `${item.text} ${item.assignee ? `(${item.assignee})` : ''} [${item.priority}]`
+          );
+          setActionItems(prev => [...prev, ...items]);
+          console.log('🎯 Real-time action items:', items.length);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('❌ WebSocket error:', error);
+        setError('Real-time connection error');
+      };
+
+      ws.onclose = () => {
+        console.log('🔌 Real-time WebSocket closed');
+        stopRealtimeVideoTranscription();
+      };
+
+    } catch (err) {
+      console.error('❌ Real-time transcription error:', err);
+      setError(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  };
+
+  // NEW: Stop real-time video transcription
+  const stopRealtimeVideoTranscription = () => {
+    console.log('⏹️ Stopping real-time transcription');
+
+    // Close WebSocket
+    if (websocketRef.current) {
+      websocketRef.current.close();
+      websocketRef.current = null;
+    }
+
+    // Clean up audio processing
+    if (processorRef.current) {
+      processorRef.current.disconnect();
+      processorRef.current = null;
+    }
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+
+    setIsProcessing(false);
+    setSuccessMessage('✅ Real-time transcription stopped');
   };
 
   // Stream video audio to backend in real-time (just like recording)
@@ -1308,6 +1501,22 @@ Click OK to open the ticket in Jira.`;
         </div>
       </ControlCard>
       
+      {/* Real-time Insights Panel - Shows above the grid when there are insights */}
+      {realtimeInsights.length > 0 && (
+        <div style={{ maxWidth: '1200px', margin: '0 auto 2rem auto' }}>
+          <RealtimeInsightsPanel>
+            <h2>Claude AI Insights</h2>
+            <InsightsContainer>
+              {realtimeInsights.slice().reverse().map((insight, index) => (
+                <InsightItem key={index}>
+                  {insight}
+                </InsightItem>
+              ))}
+            </InsightsContainer>
+          </RealtimeInsightsPanel>
+        </div>
+      )}
+
       <Grid>
         <div>
           <TranscriptCard>

@@ -8,6 +8,7 @@ import asyncio
 import tempfile
 import subprocess
 import json
+from datetime import datetime
 
 from app.agents.listener_agent import ListenerAgent
 from app.agents.summarizer_agent import SummarizerAgent
@@ -15,6 +16,8 @@ from app.agents.task_generator_agent import TaskGeneratorAgent
 from app.agents.integration_agent import IntegrationAgent
 from app.agents.emotion_agent import EmotionAnalysisAgent
 from app.agents.jira_agent import JiraAgent
+from app.agents.realtime_insights_agent import RealTimeInsightsAgent
+from app.agents.deepgram_realtime_agent import DeepgramRealtimeAgent
 from app.models import MeetingSession, TranscriptLine, ActionItem
 
 # Load environment variables from backend/.env
@@ -46,6 +49,7 @@ task_generator_agent = TaskGeneratorAgent()
 integration_agent = IntegrationAgent()
 emotion_agent = EmotionAnalysisAgent()
 jira_agent = JiraAgent()
+realtime_insights_agent = RealTimeInsightsAgent()
 
 # Store active meeting sessions
 active_sessions: Dict[str, MeetingSession] = {}
@@ -85,28 +89,28 @@ async def meeting_websocket(websocket: WebSocket, session_id: str):
     WebSocket endpoint for real-time meeting transcription and processing
     """
     await websocket.accept()
-    
+
     # Create new meeting session
     session = MeetingSession(session_id=session_id)
     active_sessions[session_id] = session
-    
+
     try:
         while True:
             # Receive audio data from client
             data = await websocket.receive_bytes()
-            
+
             # Process with Listener Agent (transcription)
             transcript_line = await listener_agent.process_audio(data)
-            
+
             if transcript_line:
                 session.transcript.append(transcript_line)
-                
+
                 # Analyze emotions for this message
                 emotion_data = await emotion_agent.analyze_single_message(
-                    transcript_line.text, 
+                    transcript_line.text,
                     transcript_line.speaker
                 )
-                
+
                 # Send transcript with emotion data back to client
                 await websocket.send_json({
                     "type": "transcript",
@@ -117,21 +121,21 @@ async def meeting_websocket(websocket: WebSocket, session_id: str):
                         "emotions": emotion_data
                     }
                 })
-                
+
                 # Check for action items with Task Generator Agent
                 if len(session.transcript) % 5 == 0:  # Check every 5 lines
                     action_items = await task_generator_agent.extract_action_items(
                         session.transcript[-5:]
                     )
-                    
+
                     if action_items:
                         session.action_items.extend(action_items)
-                        
+
                         await websocket.send_json({
                             "type": "action_items",
                             "data": [item.dict() for item in action_items]
                         })
-    
+
     except WebSocketDisconnect:
         print(f"Client disconnected from session {session_id}")
     except Exception as e:
@@ -141,6 +145,114 @@ async def meeting_websocket(websocket: WebSocket, session_id: str):
         # Clean up session
         if session_id in active_sessions:
             del active_sessions[session_id]
+
+
+@app.websocket("/ws/realtime-video/{session_id}")
+async def realtime_video_websocket(websocket: WebSocket, session_id: str):
+    """
+    NEW: WebSocket endpoint for TRUE real-time video transcription using Deepgram
+    Audio is streamed from playing video and transcribed instantly
+    """
+    await websocket.accept()
+    print(f"🎬 Real-time video session started: {session_id}")
+
+    # Create Deepgram agent for this session
+    deepgram_agent = DeepgramRealtimeAgent()
+    transcript_buffer = []
+
+    # Define callback for when Deepgram sends transcripts
+    async def on_transcript(data):
+        text = data["text"]
+        is_final = data["is_final"]
+        speaker = data["speaker"]
+
+        if is_final:
+            # Final transcript - send to frontend
+            print(f"📝 Real-time transcript: [{speaker}] {text}")
+
+            # Send to frontend
+            await websocket.send_json({
+                "type": "transcript",
+                "data": {
+                    "speaker": speaker,
+                    "text": text,
+                    "is_final": True
+                }
+            })
+
+            # Store in buffer for later processing
+            transcript_buffer.append({
+                "speaker": speaker,
+                "text": text
+            })
+
+            # Generate action items every 3 lines
+            if len(transcript_buffer) % 3 == 0:
+                try:
+                    # Convert to TranscriptLine objects
+                    transcript_lines = [
+                        TranscriptLine(
+                            speaker=item["speaker"],
+                            text=item["text"],
+                            timestamp=datetime.now()
+                        )
+                        for item in transcript_buffer[-3:]
+                    ]
+
+                    # Generate action items
+                    action_items = await task_generator_agent.extract_action_items(transcript_lines)
+
+                    if action_items:
+                        await websocket.send_json({
+                            "type": "action_items",
+                            "data": [item.dict() for item in action_items]
+                        })
+                        print(f"🎯 Generated {len(action_items)} action items")
+                except Exception as e:
+                    print(f"❌ Action item generation error: {e}")
+        else:
+            # Interim result - send as live preview
+            await websocket.send_json({
+                "type": "transcript",
+                "data": {
+                    "speaker": speaker,
+                    "text": text,
+                    "is_final": False
+                }
+            })
+
+    def on_error(error):
+        print(f"❌ Deepgram error: {error}")
+
+    try:
+        # Start Deepgram streaming
+        await deepgram_agent.start_streaming(
+            on_transcript=on_transcript,
+            on_error=on_error
+        )
+
+        await websocket.send_json({
+            "type": "status",
+            "message": "🎙️ Real-time transcription active! Play your video."
+        })
+
+        # Receive audio chunks from frontend and forward to Deepgram
+        while True:
+            data = await websocket.receive_bytes()
+
+            # Forward audio to Deepgram
+            deepgram_agent.send_audio(data)
+
+    except WebSocketDisconnect:
+        print(f"🔌 Client disconnected from real-time video session {session_id}")
+    except Exception as e:
+        print(f"❌ Error in real-time video WebSocket: {str(e)}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Clean up Deepgram connection
+        deepgram_agent.finish()
+        print(f"✅ Real-time video session ended: {session_id}")
 
 
 @app.post("/api/meeting/{session_id}/end")
@@ -245,21 +357,22 @@ async def list_sessions():
 
 @app.post("/api/analyze-emotion")
 async def analyze_emotion_text(data: dict):
-    """Analyze emotion from text using Claude AI (for browser speech recognition)"""
+    """Analyze emotion from text using Claude AI (for browser speech recognition) WITH REAL-TIME INSIGHTS"""
     try:
         text = data.get("text", "")
         speaker = data.get("speaker", "Speaker")
-        
+        recent_transcript = data.get("recent_transcript", [])  # Get context from frontend
+
         if not text:
             return {"error": "No text provided"}
-            
-        print(f"🧠 Analyzing emotion for: {speaker}: {text[:50]}...")
-        
+
+        print(f"🧠 Analyzing emotion + real-time insights for: {speaker}: {text[:50]}...")
+
         # Use the emotion agent to analyze
         emotion_result = await emotion_agent.analyze_single_message(speaker, text)
-        
+
         print(f"✅ Emotion result: {emotion_result}")
-        
+
         # Transform to frontend-expected format
         # Map emotions to happiness percentages
         emotion_to_happiness = {
@@ -277,29 +390,62 @@ async def analyze_emotion_text(data: dict):
             'sad': 15,
             'angry': 10
         }
-        
+
         primary_emotion = emotion_result.get('primary_emotion', 'neutral')
         happiness_level = emotion_to_happiness.get(primary_emotion, 50)
-        
+
         # Map emotions to sentiment
         positive_emotions = ['excited', 'very happy', 'happy', 'content', 'calm']
         negative_emotions = ['frustrated', 'disappointed', 'sad', 'angry', 'concerned']
-        
+
         if primary_emotion in positive_emotions:
             sentiment = 'positive'
         elif primary_emotion in negative_emotions:
             sentiment = 'negative'
         else:
             sentiment = 'neutral'
-        
+
+        # NEW: Get real-time insights from the insights agent
+        insights = []
+        try:
+            # Convert recent transcript to TranscriptLine objects for context
+            context_lines = []
+            for item in recent_transcript[-5:]:  # Last 5 lines of context
+                context_lines.append(TranscriptLine(
+                    speaker=item.get("speaker", "Unknown"),
+                    text=item.get("text", ""),
+                    timestamp=item.get("timestamp", datetime.now().isoformat())
+                ))
+
+            # Create current line
+            current_line = TranscriptLine(
+                speaker=speaker,
+                text=text,
+                timestamp=datetime.now()
+            )
+
+            # Get real-time insights (collect all from async generator)
+            async for insight_chunk in realtime_insights_agent.analyze_live_transcript(
+                current_line,
+                context_lines
+            ):
+                if insight_chunk.get("type") == "insight_complete":
+                    insights.append(insight_chunk.get("insight", ""))
+                    print(f"🤖 Real-time insight: {insight_chunk.get('insight')}")
+
+        except Exception as insight_error:
+            print(f"⚠️ Real-time insights error (non-critical): {insight_error}")
+            # Don't fail the whole request if insights fail
+
         return {
             'sentiment': sentiment,
             'confidence': emotion_result.get('confidence', 0.8),
             'happiness_level': happiness_level,
             'key_emotions': [primary_emotion, emotion_result.get('energy_level', 'medium')],
-            'mood_summary': f"{primary_emotion} ({emotion_result.get('happiness_emoji', '😐')})"
+            'mood_summary': f"{primary_emotion} ({emotion_result.get('happiness_emoji', '😐')})",
+            'realtime_insights': insights  # NEW: Add real-time insights to response
         }
-        
+
     except Exception as e:
         print(f"❌ Emotion analysis error: {e}")
         return {"error": str(e)}

@@ -80,7 +80,6 @@ class ListenerAgent:
                 print(f"✅ Listener Agent initialized with OPENAI WHISPER (real-time streaming)")
                 # Deepgram doesn't support webm chunks well, so use OpenAI Whisper instead
                 # Disable SSL verification to work with corporate proxies
-                import httpx
                 http_client = httpx.Client(verify=False)
                 self.client = OpenAI(
                     api_key=self.api_key,
