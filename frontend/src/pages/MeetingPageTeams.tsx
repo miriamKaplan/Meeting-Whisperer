@@ -583,6 +583,7 @@ const MeetingPageTeams: React.FC = () => {
   const processFileWithAgents = async (file: File) => {
     try {
       console.log('🎬 Starting REAL-TIME file processing for:', file.name);
+      alert('🎬 Starting video processing - watch console for updates!');
 
       // Clear previous data
       setTranscript([]);
