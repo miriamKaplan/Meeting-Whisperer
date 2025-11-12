@@ -17,8 +17,17 @@ from app.agents.integration_agent import IntegrationAgent
 from app.agents.emotion_agent import EmotionAnalysisAgent
 from app.agents.jira_agent import JiraAgent
 from app.agents.realtime_insights_agent import RealTimeInsightsAgent
-from app.agents.deepgram_realtime_agent import DeepgramRealtimeAgent
+from app.agents.qa_agent import QAAgent
+from app.agents.personalized_context_agent import PersonalizedContextAgent
 from app.models import MeetingSession, TranscriptLine, ActionItem
+
+# Optional: Deepgram agent (only if dependencies are installed)
+try:
+    from app.agents.deepgram_realtime_agent import DeepgramRealtimeAgent
+    DEEPGRAM_AVAILABLE = True
+except ImportError:
+    DEEPGRAM_AVAILABLE = False
+    print("⚠️ Deepgram agent not available - install deepgram-sdk to enable real-time video transcription")
 
 # Load environment variables from backend/.env
 from pathlib import Path
@@ -50,6 +59,8 @@ integration_agent = IntegrationAgent()
 emotion_agent = EmotionAnalysisAgent()
 jira_agent = JiraAgent()
 realtime_insights_agent = RealTimeInsightsAgent()
+qa_agent = QAAgent()
+personalized_context_agent = PersonalizedContextAgent()
 
 # Store active meeting sessions
 active_sessions: Dict[str, MeetingSession] = {}
@@ -154,6 +165,15 @@ async def realtime_video_websocket(websocket: WebSocket, session_id: str):
     Audio is streamed from playing video and transcribed instantly
     """
     await websocket.accept()
+
+    if not DEEPGRAM_AVAILABLE:
+        await websocket.send_json({
+            "type": "error",
+            "message": "Deepgram real-time transcription not available. Install deepgram-sdk package."
+        })
+        await websocket.close()
+        return
+
     print(f"🎬 Real-time video session started: {session_id}")
 
     # Create Deepgram agent for this session
@@ -765,9 +785,163 @@ async def get_jira_project_info():
     try:
         project_info = await jira_agent.get_project_info()
         return project_info
-        
+
     except Exception as e:
         print(f"❌ Jira project info error: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/qa/ask")
+async def ask_question(request: dict):
+    """
+    Ask a question about meeting content using the Q&A Agent
+    """
+    try:
+        question = request.get("question", "")
+        session_id = request.get("session_id")
+        transcript_data = request.get("transcript", [])
+        action_items_data = request.get("action_items", [])
+        summary = request.get("summary")
+
+        if not question:
+            return {"error": "No question provided"}
+
+        # Convert transcript data to TranscriptLine objects
+        transcript_lines = []
+        for item in transcript_data:
+            transcript_lines.append(TranscriptLine(
+                speaker=item.get("speaker", "Unknown"),
+                text=item.get("text", ""),
+                timestamp=item.get("timestamp", datetime.now().isoformat())
+            ))
+
+        # Convert action items data to ActionItem objects
+        action_items = []
+        for item in action_items_data:
+            action_items.append(ActionItem(
+                text=item.get("text", ""),
+                assignee=item.get("assignee"),
+                priority=item.get("priority", "medium"),
+                confidence=item.get("confidence", 0.8)
+            ))
+
+        # Use Q&A agent to answer
+        result = await qa_agent.answer_question(
+            question=question,
+            transcript=transcript_lines,
+            action_items=action_items if action_items else None,
+            summary=summary
+        )
+
+        print(f"✅ Q&A: Answered question with {result.get('confidence', 0):.2f} confidence")
+
+        return result
+
+    except Exception as e:
+        print(f"❌ Q&A error: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/qa/search-topic")
+async def search_topic(request: dict):
+    """
+    Search for a specific topic in meeting transcript
+    """
+    try:
+        topic = request.get("topic", "")
+        transcript_data = request.get("transcript", [])
+
+        if not topic:
+            return {"error": "No topic provided"}
+
+        # Convert transcript data
+        transcript_lines = []
+        for item in transcript_data:
+            transcript_lines.append(TranscriptLine(
+                speaker=item.get("speaker", "Unknown"),
+                text=item.get("text", ""),
+                timestamp=item.get("timestamp", datetime.now().isoformat())
+            ))
+
+        # Search for topic
+        result = await qa_agent.search_topic(topic, transcript_lines)
+
+        print(f"✅ Q&A: Searched for topic '{topic}'")
+
+        return result
+
+    except Exception as e:
+        print(f"❌ Topic search error: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/qa/compare-tasks")
+async def compare_tasks(request: dict):
+    """
+    Analyze and compare action items for dependencies and conflicts
+    """
+    try:
+        action_items_data = request.get("action_items", [])
+
+        if not action_items_data:
+            return {"error": "No action items provided"}
+
+        # Convert to ActionItem objects
+        action_items = []
+        for item in action_items_data:
+            action_items.append(ActionItem(
+                text=item.get("text", ""),
+                assignee=item.get("assignee"),
+                priority=item.get("priority", "medium"),
+                confidence=item.get("confidence", 0.8)
+            ))
+
+        # Analyze tasks
+        result = await qa_agent.compare_tasks(action_items)
+
+        print(f"✅ Q&A: Compared {len(action_items)} tasks")
+
+        return result
+
+    except Exception as e:
+        print(f"❌ Task comparison error: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/personalized-context")
+async def get_personalized_context(request: dict):
+    """
+    Get personalized explanations based on user background
+    """
+    try:
+        user_id = request.get("user_id", "default")
+        new_text = request.get("text", "")
+        recent_transcript = request.get("recent_transcript", [])
+
+        if not new_text:
+            return {"error": "No text provided"}
+
+        # Get user profile
+        user_profile = await personalized_context_agent.get_user_profile(user_id)
+
+        # Analyze for personalized context
+        analysis = await personalized_context_agent.analyze_for_user(
+            user_profile=user_profile,
+            recent_transcript=recent_transcript,
+            new_text=new_text
+        )
+
+        # Format for display
+        display_message = await personalized_context_agent.format_explanation_for_display(analysis)
+
+        return {
+            "analysis": analysis,
+            "display_message": display_message,
+            "user_profile": user_profile
+        }
+
+    except Exception as e:
+        print(f"❌ Personalized context error: {e}")
         return {"error": str(e)}
 
 
