@@ -288,7 +288,14 @@ const MeetingPageTeams: React.FC = () => {
   const [agentData, setAgentData] = useState<string>('');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
-  const [userId, setUserId] = useState<string>('paul'); // Can be changed to user's actual ID
+
+  // User profile for personalized assistant (can be customized per user)
+  const [userProfile] = useState({
+    name: "Paul",
+    strong_areas: ["finance", "business", "management", "accounting"],
+    weak_areas: ["technical", "engineering", "programming", "software development"],
+    expertise_level: "finance_expert"
+  });
 
   // Refs
   const timerRef = useRef<any>(null);
@@ -395,8 +402,8 @@ const MeetingPageTeams: React.FC = () => {
                 generateActionItems(updated);
               }
 
-              // Check for personalized context
-              checkPersonalizedContext(finalTranscript, updated);
+              // Call personalized assistant to check for explanations
+              checkForPersonalizedHelp(finalTranscript, updated);
 
               return updated;
             });
@@ -449,6 +456,32 @@ const MeetingPageTeams: React.FC = () => {
     }
 
     setIsRecording(false);
+  };
+
+  // Check for personalized help
+  const checkForPersonalizedHelp = async (latestText: string, currentTranscript: TranscriptItem[]) => {
+    try {
+      const response = await fetch('http://localhost:8000/api/personalized-assistant/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_profile: userProfile,
+          recent_transcript: currentTranscript.slice(-10).map(item => ({
+            speaker: item.speaker,
+            text: item.text
+          })),
+          latest_text: latestText
+        })
+      });
+
+      const result = await response.json();
+
+      if (result.explanation) {
+        setAgentData(result.explanation);
+      }
+    } catch (err) {
+      console.error('Personalized assistant failed:', err);
+    }
   };
 
   // Generate action items
@@ -579,170 +612,54 @@ const MeetingPageTeams: React.FC = () => {
     await processFileWithAgents(file);
   };
 
-  // Process file with all agents - REAL-TIME STREAMING
+  // Process file with all agents
   const processFileWithAgents = async (file: File) => {
     try {
-      console.log('🎬 Starting REAL-TIME file processing for:', file.name);
-      alert('🎬 Starting video processing - watch console for updates!');
-
-      // Clear previous data
-      setTranscript([]);
-      setActionItems([]);
-      setRealtimeInsights([]);
-
       // Prepare form data
       const formData = new FormData();
       formData.append('file', file);
 
-      // Use streaming endpoint for real-time updates
-      console.log('📤 Connecting to streaming endpoint...');
-      const response = await fetch('http://localhost:8000/api/process-media-stream', {
+      // Send to backend for processing
+      const response = await fetch('http://localhost:8000/api/process-media', {
         method: 'POST',
         body: formData
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      console.log('✅ Connected to stream, receiving real-time updates...');
-      console.log('Response headers:', response.headers);
-      console.log('Response body:', response.body);
-
-      // Read the stream
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-
-      if (!reader) {
-        console.error('❌ No reader available from response.body');
-        throw new Error('No reader available');
-      }
-
-      let buffer = '';
-      let chunkCount = 0;
-
-      try {
-        while (true) {
-          console.log(`📦 Reading chunk ${++chunkCount}...`);
-          const { done, value } = await reader.read();
-
-          if (done) {
-            console.log('✅ Stream completed, total chunks:', chunkCount);
-            break;
-          }
-
-          // Decode the chunk
-          const chunkText = decoder.decode(value, { stream: true });
-          console.log(`📦 Chunk ${chunkCount} raw data (${chunkText.length} chars):`, chunkText.substring(0, 200));
-          buffer += chunkText;
-
-          // Process complete SSE messages
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-          console.log(`📄 Processing ${lines.length} lines from buffer`);
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6); // Remove 'data: ' prefix
-              console.log('🔍 Parsing SSE data:', data);
-
-              try {
-                const event = JSON.parse(data);
-                console.log('📥 Stream event:', event.type, event);
-
-                switch (event.type) {
-                  case 'status':
-                    console.log('ℹ️ Status:', event.message);
-                    break;
-
-                  case 'transcript':
-                    // Add transcript line in real-time
-                    const newLine = event.line;
-                    console.log('📝 New transcript line:', newLine);
-                    setTranscript(prev => {
-                      const updated = [...prev, {
-                        speaker: newLine.speaker,
-                        text: newLine.text,
-                        timestamp: newLine.timestamp,
-                        emotions: newLine.emotion ? {
-                          sentiment: 'neutral',
-                          confidence: newLine.emotion_score || 0.5,
-                          happiness_level: 50,
-                          key_emotions: [newLine.emotion],
-                          mood_summary: newLine.emotion
-                        } : undefined
-                      }];
-                      console.log('✅ Transcript updated, now has', updated.length, 'items');
-                      return updated;
-                    });
-                    break;
-
-                  case 'action_items':
-                    // Update action items in real-time
-                    console.log('📋 Updating action items:', event.items);
-                    const items = event.items.map((item: any) =>
-                      `${item.text} ${item.assignee ? `(${item.assignee})` : ''} [${item.priority || 'medium'}]`
-                    );
-                    setActionItems(items);
-                    console.log('✅ Action items updated, now has', items.length, 'items');
-                    break;
-
-                  case 'complete':
-                    console.log('✅ Processing complete:', event.message);
-                    break;
-
-                  case 'error':
-                    console.error('❌ Stream error:', event.message);
-                    alert(`Error: ${event.message}`);
-                    break;
-                }
-              } catch (e) {
-                console.error('❌ Error parsing stream data:', e, 'Data was:', data);
-              }
-            } else if (line.trim()) {
-              console.log('⚠️ Non-SSE line:', line);
-            }
-          }
-        }
-      } catch (streamError) {
-        console.error('❌ Stream reading error:', streamError);
-        throw streamError;
-      }
-
-    } catch (error) {
-      console.error('❌ File processing error:', error);
-      alert(`Error processing file: ${error}`);
-    }
-  };
-
-  // Check for personalized context
-  const checkPersonalizedContext = async (newText: string, currentTranscript: TranscriptItem[]) => {
-    try {
-      const recentTranscript = currentTranscript.slice(-10).map(item => ({
-        speaker: item.speaker,
-        text: item.text,
-        timestamp: item.timestamp || new Date().toISOString()
-      }));
-
-      const response = await fetch('http://localhost:8000/api/personalized-context', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user_id: userId,
-          text: newText,
-          recent_transcript: recentTranscript
-        })
-      });
-
       const result = await response.json();
 
-      if (result.display_message && result.display_message.trim()) {
-        setAgentData(result.display_message);
+      if (result.error) {
+        console.error('Processing error:', result.error);
+        return;
       }
 
-    } catch (err) {
-      console.error('Personalized context error:', err);
+      // Update transcript
+      if (result.transcript && Array.isArray(result.transcript)) {
+        const transcriptItems = result.transcript.map((item: any) => ({
+          speaker: item.speaker || 'Speaker',
+          text: item.text || item.content || '',
+          timestamp: item.timestamp || new Date().toISOString(),
+          emotions: item.emotions
+        }));
+        setTranscript(transcriptItems);
+      }
+
+      // Update action items
+      if (result.action_items && Array.isArray(result.action_items)) {
+        const items = result.action_items.map((item: any) =>
+          `${item.text} ${item.assignee ? `(${item.assignee})` : ''} [${item.priority || 'medium'}]`
+        );
+        setActionItems(items);
+      }
+
+      // Update insights
+      if (result.insights && Array.isArray(result.insights)) {
+        setRealtimeInsights(result.insights);
+      }
+
+      // Agent data will be populated by your custom agent
+
+    } catch (error) {
+      console.error('File processing error:', error);
     }
   };
 

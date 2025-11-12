@@ -18,7 +18,7 @@ from app.agents.emotion_agent import EmotionAnalysisAgent
 from app.agents.jira_agent import JiraAgent
 from app.agents.realtime_insights_agent import RealTimeInsightsAgent
 from app.agents.qa_agent import QAAgent
-from app.agents.personalized_context_agent import PersonalizedContextAgent
+from app.agents.personalized_assistant_agent import PersonalizedAssistantAgent
 from app.models import MeetingSession, TranscriptLine, ActionItem
 
 # Optional: Deepgram agent (only if dependencies are installed)
@@ -60,7 +60,7 @@ emotion_agent = EmotionAnalysisAgent()
 jira_agent = JiraAgent()
 realtime_insights_agent = RealTimeInsightsAgent()
 qa_agent = QAAgent()
-personalized_context_agent = PersonalizedContextAgent()
+personalized_assistant_agent = PersonalizedAssistantAgent()
 
 # Store active meeting sessions
 active_sessions: Dict[str, MeetingSession] = {}
@@ -908,41 +908,36 @@ async def compare_tasks(request: dict):
         return {"error": str(e)}
 
 
-@app.post("/api/personalized-context")
-async def get_personalized_context(request: dict):
+@app.post("/api/personalized-assistant/analyze")
+async def analyze_for_personalized_help(request: dict):
     """
-    Get personalized explanations based on user background
+    Analyze conversation for personalized explanations based on user's background
     """
     try:
-        user_id = request.get("user_id", "default")
-        new_text = request.get("text", "")
+        user_profile = request.get("user_profile", {})
         recent_transcript = request.get("recent_transcript", [])
+        latest_text = request.get("latest_text", "")
 
-        if not new_text:
-            return {"error": "No text provided"}
+        if not latest_text:
+            return {"explanation": None}
 
-        # Get user profile
-        user_profile = await personalized_context_agent.get_user_profile(user_id)
-
-        # Analyze for personalized context
-        analysis = await personalized_context_agent.analyze_for_user(
+        # Get personalized explanation
+        explanation = await personalized_assistant_agent.analyze_for_user(
             user_profile=user_profile,
             recent_transcript=recent_transcript,
-            new_text=new_text
+            latest_text=latest_text
         )
 
-        # Format for display
-        display_message = await personalized_context_agent.format_explanation_for_display(analysis)
+        print(f"✅ Personalized Assistant: Analysis complete")
 
         return {
-            "analysis": analysis,
-            "display_message": display_message,
-            "user_profile": user_profile
+            "explanation": explanation,
+            "user": user_profile.get("name", "User")
         }
 
     except Exception as e:
-        print(f"❌ Personalized context error: {e}")
-        return {"error": str(e)}
+        print(f"❌ Personalized assistant error: {e}")
+        return {"error": str(e), "explanation": None}
 
 
 if __name__ == "__main__":
